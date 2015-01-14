@@ -8,6 +8,7 @@
 #include "block/accounting.h"
 #include "qapi/qmp/qobject.h"
 #include "qapi-types.h"
+#include "migration/migration-colo.h"
 
 /* block.c */
 typedef struct BlockDriver BlockDriver;
@@ -556,5 +557,9 @@ void bdrv_io_unplug(BlockDriverState *bs);
 void bdrv_flush_io_queue(BlockDriverState *bs);
 
 BlockAcctStats *bdrv_get_stats(BlockDriverState *bs);
+
+int bdrv_start_replication(BlockDriverState *bs, int mode);
+int bdrv_do_checkpoint(BlockDriverState *bs);
+int bdrv_stop_replication(BlockDriverState *bs);
 
 #endif
