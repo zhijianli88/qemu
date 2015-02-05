@@ -54,6 +54,7 @@
 #include "hw/acpi/acpi.h"
 #include "qemu/host-utils.h"
 #include "qemu/rcu_queue.h"
+#include "migration/migration-colo.h"
 
 #ifdef DEBUG_ARCH_INIT
 #define DPRINTF(fmt, ...) \
@@ -1185,16 +1186,8 @@ static void reset_ram_globals(void)
 
 #define MAX_WAIT 50 /* ms, half buffered_file limit */
 
-
-/* Each of ram_save_setup, ram_save_iterate and ram_save_complete has
- * long-running RCU critical section.  When rcu-reclaims in the code
- * start to become numerous it will be necessary to reduce the
- * granularity of these critical sections.
- */
-
-static int ram_save_setup(QEMUFile *f, void *opaque)
+static int ram_save_init_globals(void)
 {
-    RAMBlock *block;
     int64_t ram_bitmap_pages; /* Size of bitmap in pages, including gaps */
 
     mig_throttle_on = false;
@@ -1253,6 +1246,31 @@ static int ram_save_setup(QEMUFile *f, void *opaque)
     migration_bitmap_sync();
     qemu_mutex_unlock_ramlist();
     qemu_mutex_unlock_iothread();
+    rcu_read_unlock();
+
+    return 0;
+}
+
+/* Each of ram_save_setup, ram_save_iterate and ram_save_complete has
+ * long-running RCU critical section.  When rcu-reclaims in the code
+ * start to become numerous it will be necessary to reduce the
+ * granularity of these critical sections.
+ */
+
+static int ram_save_setup(QEMUFile *f, void *opaque)
+{
+    RAMBlock *block;
+
+    /*
+     * migration has already setup the bitmap, reuse it.
+     */
+    if (!migrate_in_colo_state()) {
+        if (ram_save_init_globals() < 0) {
+            return -1;
+         }
+    }
+
+    rcu_read_lock();
 
     qemu_put_be64(f, ram_bytes_total() | RAM_SAVE_FLAG_MEM_SIZE);
 
@@ -1352,7 +1370,8 @@ static int ram_save_complete(QEMUFile *f, void *opaque)
     while (true) {
         int pages;
 
-        pages = ram_find_and_save_block(f, true, &bytes_transferred);
+        pages = ram_find_and_save_block(f, !migrate_in_colo_state(),
+                                        &bytes_transferred);
         /* no more blocks to sent */
         if (pages == 0) {
             break;
@@ -1361,7 +1380,14 @@ static int ram_save_complete(QEMUFile *f, void *opaque)
 
     flush_compressed_data(f);
     ram_control_after_iterate(f, RAM_CONTROL_FINISH);
-    migration_end();
+
+    /*
+     * Since we need to reuse dirty bitmap in colo,
+     * don't cleanup the bitmap.
+     */
+    if (!migrate_enable_colo() || migration_has_failed(migrate_get_current())) {
+        migration_end();
+    }
 
     rcu_read_unlock();
     qemu_put_be64(f, RAM_SAVE_FLAG_EOS);
