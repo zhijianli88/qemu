@@ -26,6 +26,8 @@ struct colo_incoming {
 };
 
 void colo_init_checkpointer(MigrationState *s);
+bool migrate_in_colo_state(void);
+
 /* loadvm */
 extern Coroutine *migration_incoming_co;
 bool loadvm_enable_colo(void);

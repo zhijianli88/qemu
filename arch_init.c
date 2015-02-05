@@ -52,6 +52,7 @@
 #include "exec/ram_addr.h"
 #include "hw/acpi/acpi.h"
 #include "qemu/host-utils.h"
+#include "migration/migration-colo.h"
 
 #ifdef DEBUG_ARCH_INIT
 #define DPRINTF(fmt, ...) \
@@ -767,11 +768,17 @@ static void ram_migration_cancel(void *opaque)
 
 static void reset_ram_globals(void)
 {
-    last_seen_block = NULL;
     last_sent_block = NULL;
     last_offset = 0;
     last_version = ram_list.version;
-    ram_bulk_stage = true;
+    if (migrate_in_colo_state()) {
+        ram_bulk_stage = false;
+    } else {
+        ram_bulk_stage = true;
+    }
+    if (ram_bulk_stage) {
+        last_seen_block = NULL;
+    }
 }
 
 #define MAX_WAIT 50 /* ms, half buffered_file limit */
@@ -780,6 +787,18 @@ static int ram_save_setup(QEMUFile *f, void *opaque)
 {
     RAMBlock *block;
     int64_t ram_bitmap_pages; /* Size of bitmap in pages, including gaps */
+
+    /*
+     * migration has already setup the bitmap, reuse it.
+     */
+    if (migrate_in_colo_state()) {
+        qemu_mutex_lock_ramlist();
+        bytes_transferred = 0;
+        migration_dirty_pages = 0;
+        reset_ram_globals();
+        DPRINTF("ram_save_setup for colo\n");
+        goto out_setup;
+    }
 
     mig_throttle_on = false;
     dirty_rate_high_cnt = 0;
@@ -841,6 +860,7 @@ static int ram_save_setup(QEMUFile *f, void *opaque)
     migration_bitmap_sync();
     qemu_mutex_unlock_iothread();
 
+out_setup:
     qemu_put_be64(f, ram_bytes_total() | RAM_SAVE_FLAG_MEM_SIZE);
 
     QTAILQ_FOREACH(block, &ram_list.blocks, next) {
@@ -950,7 +970,14 @@ static int ram_save_complete(QEMUFile *f, void *opaque)
     }
 
     ram_control_after_iterate(f, RAM_CONTROL_FINISH);
-    migration_end();
+
+    /*
+     * Since we need to reuse dirty bitmap in colo,
+     * don't cleanup the bitmap.
+     */
+    if (!migrate_enable_colo() || migration_has_failed(migrate_get_current())) {
+        migration_end();
+    }
 
     qemu_mutex_unlock_ramlist();
     qemu_put_be64(f, RAM_SAVE_FLAG_EOS);

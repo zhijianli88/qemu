@@ -20,3 +20,8 @@ void *colo_process_incoming_checkpoints(void *opaque)
 {
     return NULL;
 }
+
+bool migrate_in_colo_state(void)
+{
+    return false;
+}
