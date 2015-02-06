@@ -24,6 +24,12 @@ do { fprintf(stdout, "colo: " fmt , ## __VA_ARGS__); } while (0)
 #else
 #define DPRINTF(fmt, ...) do {} while (0)
 #endif
+/*
+ * force checkpoint timer: unit ms
+ * this is large because COLO checkpoint will mostly depend on
+ * COLO compare module.
+ */
+#define CHKPOINT_TIMER 10000
 
 enum {
     COLO_READY = 0x46,
@@ -321,6 +327,23 @@ static void *colo_thread(void *opaque)
     DPRINTF("vm resume to run\n");
 
     while (s->state == MIG_STATE_COLO) {
+        int proxy_checkpoint_req;
+
+        /* wait for a colo checkpoint */
+        proxy_checkpoint_req = colo_proxy_compare();
+        if (proxy_checkpoint_req < 0) {
+            goto out;
+        } else if (!proxy_checkpoint_req) {
+            /*
+             * No checkpoint is needed, wait for 1ms and then
+             * check if we need checkpoint again
+             */
+            usleep(1000);
+            continue;
+        } else {
+            DPRINTF("Net packets is not consistent!!!\n");
+        }
+
         /* start a colo checkpoint */
         if (do_colo_transaction(s, colo_control)) {
             goto out;
