@@ -276,6 +276,15 @@ void qmp_migrate_set_capabilities(MigrationCapabilityStatusList *params,
     }
 
     for (cap = params; cap; cap = cap->next) {
+#ifndef CONFIG_COLO
+        if (cap->value->capability == MIGRATION_CAPABILITY_COLO &&
+            cap->value->state) {
+            error_setg(errp, "COLO is not currently supported, please"
+                             " configure with --enable-colo option in order to"
+                             " support COLO feature");
+            continue;
+        }
+#endif
         s->enabled_capabilities[cap->value->capability] = cap->value->state;
     }
 }
@@ -583,6 +592,12 @@ int64_t migrate_xbzrle_cache_size(void)
     s = migrate_get_current();
 
     return s->xbzrle_cache_size;
+}
+
+bool migrate_enable_colo(void)
+{
+    MigrationState *s = migrate_get_current();
+    return s->enabled_capabilities[MIGRATION_CAPABILITY_COLO];
 }
 
 /* migration thread support */
