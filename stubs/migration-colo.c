@@ -10,14 +10,8 @@
  * later.  See the COPYING file in the top-level directory.
  */
 
-#ifndef QEMU_MIGRATION_COLO_H
-#define QEMU_MIGRATION_COLO_H
+#include "migration/migration-colo.h"
 
-#include "qemu-common.h"
-#include "migration/migration.h"
-
-void colo_info_mig_init(void);
-
-void colo_init_checkpointer(MigrationState *s);
-
-#endif
+void colo_init_checkpointer(MigrationState *s)
+{
+}

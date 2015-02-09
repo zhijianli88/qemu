@@ -65,6 +65,19 @@ struct MigrationState
     int64_t dirty_sync_count;
 };
 
+enum {
+    MIG_STATE_ERROR = -1,
+    MIG_STATE_NONE,
+    MIG_STATE_SETUP,
+    MIG_STATE_CANCELLING,
+    MIG_STATE_CANCELLED,
+    MIG_STATE_ACTIVE,
+    MIG_STATE_COLO,
+    MIG_STATE_COMPLETED,
+};
+
+void migrate_set_state(MigrationState *s, int old_state, int new_state);
+
 void process_incoming_migration(QEMUFile *f);
 
 void qemu_start_incoming_migration(const char *uri, Error **errp);

@@ -25,16 +25,7 @@
 #include "qemu/thread.h"
 #include "qmp-commands.h"
 #include "trace.h"
-
-enum {
-    MIG_STATE_ERROR = -1,
-    MIG_STATE_NONE,
-    MIG_STATE_SETUP,
-    MIG_STATE_CANCELLING,
-    MIG_STATE_CANCELLED,
-    MIG_STATE_ACTIVE,
-    MIG_STATE_COMPLETED,
-};
+#include "migration/migration-colo.h"
 
 #define MAX_THROTTLE  (32 << 20)      /* Migration speed throttling */
 
@@ -227,6 +218,11 @@ MigrationInfo *qmp_query_migrate(Error **errp)
 
         get_xbzrle_cache_stats(info);
         break;
+    case MIG_STATE_COLO:
+        info->has_status = true;
+        info->status = g_strdup("colo");
+        /* TODO: display COLO specific informations(checkpoint info etc.),*/
+        break;
     case MIG_STATE_COMPLETED:
         get_xbzrle_cache_stats(info);
 
@@ -270,7 +266,8 @@ void qmp_migrate_set_capabilities(MigrationCapabilityStatusList *params,
     MigrationState *s = migrate_get_current();
     MigrationCapabilityStatusList *cap;
 
-    if (s->state == MIG_STATE_ACTIVE || s->state == MIG_STATE_SETUP) {
+    if (s->state == MIG_STATE_ACTIVE || s->state == MIG_STATE_SETUP ||
+        s->state == MIG_STATE_COLO) {
         error_set(errp, QERR_MIGRATION_ACTIVE);
         return;
     }
@@ -291,7 +288,7 @@ void qmp_migrate_set_capabilities(MigrationCapabilityStatusList *params,
 
 /* shared migration helpers */
 
-static void migrate_set_state(MigrationState *s, int old_state, int new_state)
+void migrate_set_state(MigrationState *s, int old_state, int new_state)
 {
     if (atomic_cmpxchg(&s->state, old_state, new_state) == new_state) {
         trace_migrate_set_state(new_state);
@@ -437,7 +434,7 @@ void qmp_migrate(const char *uri, bool has_blk, bool blk,
     params.shared = has_inc && inc;
 
     if (s->state == MIG_STATE_ACTIVE || s->state == MIG_STATE_SETUP ||
-        s->state == MIG_STATE_CANCELLING) {
+        s->state == MIG_STATE_CANCELLING || s->state == MIG_STATE_COLO) {
         error_set(errp, QERR_MIGRATION_ACTIVE);
         return;
     }
@@ -611,6 +608,7 @@ static void *migration_thread(void *opaque)
     int64_t max_size = 0;
     int64_t start_time = initial_time;
     bool old_vm_running = false;
+    bool enable_colo = migrate_enable_colo();
 
     qemu_savevm_state_begin(s->file, &s->params);
 
@@ -647,7 +645,10 @@ static void *migration_thread(void *opaque)
                 }
 
                 if (!qemu_file_get_error(s->file)) {
-                    migrate_set_state(s, MIG_STATE_ACTIVE, MIG_STATE_COMPLETED);
+                    if (!enable_colo) {
+                        migrate_set_state(s, MIG_STATE_ACTIVE,
+                                          MIG_STATE_COMPLETED);
+                    }
                     break;
                 }
             }
@@ -697,11 +698,16 @@ static void *migration_thread(void *opaque)
         }
         runstate_set(RUN_STATE_POSTMIGRATE);
     } else {
-        if (old_vm_running) {
+        if (s->state == MIG_STATE_ACTIVE && enable_colo) {
+            colo_init_checkpointer(s);
+        } else if (old_vm_running) {
             vm_start();
         }
     }
-    qemu_bh_schedule(s->cleanup_bh);
+
+    if (!enable_colo) {
+        qemu_bh_schedule(s->cleanup_bh);
+    }
     qemu_mutex_unlock_iothread();
 
     return NULL;
