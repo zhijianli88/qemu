@@ -21,6 +21,17 @@ typedef struct {
 
 static COLOInfo colo_info;
 
+int get_colo_mode(void)
+{
+    if (migrate_in_colo_state()) {
+        return COLO_MODE_PRIMARY;
+    } else if (loadvm_in_colo_state()) {
+        return COLO_MODE_SECONDARY;
+    } else {
+        return COLO_MODE_UNKNOWN;
+    }
+}
+
 void savevm_skip_colo_state(void)
 {
     colo_info.skip = true;
