@@ -253,6 +253,7 @@ void qemu_start_incoming_migration(const char *uri, Error **errp)
     }
 }
 
+Coroutine *migration_incoming_co;
 static void process_incoming_migration_co(void *opaque)
 {
     QEMUFile *f = opaque;
@@ -263,7 +264,33 @@ static void process_incoming_migration_co(void *opaque)
     migrate_generate_event(MIGRATION_STATUS_ACTIVE);
     ret = qemu_loadvm_state(f);
 
-    qemu_fclose(f);
+    if (!ret) {
+        /* Make sure all file formats flush their mutable metadata */
+        bdrv_invalidate_cache_all(&local_err);
+        if (local_err) {
+            error_report_err(local_err);
+            migrate_decompress_threads_join();
+            exit(EXIT_FAILURE);
+        }
+    }
+    /* we get colo info, and know if we are in colo mode */
+    if (!ret && loadvm_enable_colo()) {
+        struct colo_incoming *colo_in = g_malloc0(sizeof(*colo_in));
+
+        colo_in->file = f;
+        migration_incoming_co = qemu_coroutine_self();
+        qemu_thread_create(&colo_in->thread, "colo incoming",
+             colo_process_incoming_checkpoints, colo_in, QEMU_THREAD_JOINABLE);
+        qemu_coroutine_yield();
+        migration_incoming_co = NULL;
+#if 0
+        /* FIXME  wait checkpoint incoming thread exit, and free resource */
+        qemu_thread_join(&colo_in->thread);
+        g_free(colo_in);
+#endif
+    } else {
+        qemu_fclose(f);
+    }
     free_xbzrle_decoded_buf();
     migration_incoming_state_destroy();
 
@@ -275,14 +302,6 @@ static void process_incoming_migration_co(void *opaque)
     }
     migrate_generate_event(MIGRATION_STATUS_COMPLETED);
     qemu_announce_self();
-
-    /* Make sure all file formats flush their mutable metadata */
-    bdrv_invalidate_cache_all(&local_err);
-    if (local_err) {
-        error_report_err(local_err);
-        migrate_decompress_threads_join();
-        exit(EXIT_FAILURE);
-    }
 
     /* runstate == "" means that we haven't received it through the
      * wire, so we obey autostart.  runstate == runing means that we
@@ -720,6 +739,13 @@ void qmp_migrate(const char *uri, bool has_blk, bool blk,
         error_setg(errp, QERR_MIGRATION_ACTIVE);
         return;
     }
+
+    if (loadvm_in_colo_state()) {
+        error_setg(errp, "Secondary VM is not allowed to do migration while"
+                   "in COLO status");
+        return;
+    }
+
     if (runstate_check(RUN_STATE_INMIGRATE)) {
         error_setg(errp, "Guest is waiting for an incoming migration");
         return;

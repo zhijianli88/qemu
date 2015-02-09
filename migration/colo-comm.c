@@ -61,3 +61,13 @@ void colo_info_mig_init(void)
 {
     vmstate_register(NULL, 0, &colo_state, &colo_info);
 }
+
+bool loadvm_enable_colo(void)
+{
+    return colo_info.colo_requested;
+}
+
+void loadvm_exit_colo(void)
+{
+    colo_info.colo_requested = 0;
+}
