@@ -10,6 +10,7 @@
  * later.  See the COPYING file in the top-level directory.
  */
 
+#include "qemu/timer.h"
 #include "sysemu/sysemu.h"
 #include "migration/migration-colo.h"
 #include "qemu/error-report.h"
@@ -290,6 +291,8 @@ out:
 static void *colo_thread(void *opaque)
 {
     MigrationState *s = opaque;
+    int64_t start_time = qemu_clock_get_ms(QEMU_CLOCK_HOST);
+    int64_t current_time;
     QEMUFile *colo_control = NULL;
     int ret;
 
@@ -338,8 +341,14 @@ static void *colo_thread(void *opaque)
              * No checkpoint is needed, wait for 1ms and then
              * check if we need checkpoint again
              */
-            usleep(1000);
-            continue;
+            current_time = qemu_clock_get_ms(QEMU_CLOCK_HOST);
+            if (current_time - start_time < CHKPOINT_TIMER) {
+                if (failover_request_is_set()) {
+                    goto out;
+                }
+                usleep(1000);
+                continue;
+            }
         } else {
             DPRINTF("Net packets is not consistent!!!\n");
         }
@@ -348,6 +357,8 @@ static void *colo_thread(void *opaque)
         if (do_colo_transaction(s, colo_control)) {
             goto out;
         }
+
+        start_time = qemu_clock_get_ms(QEMU_CLOCK_HOST);
     }
 
 out:
