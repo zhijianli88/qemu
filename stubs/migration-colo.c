@@ -15,3 +15,8 @@
 void colo_init_checkpointer(MigrationState *s)
 {
 }
+
+void *colo_process_incoming_checkpoints(void *opaque)
+{
+    return NULL;
+}

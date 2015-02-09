@@ -15,9 +15,21 @@
 
 #include "qemu-common.h"
 #include "migration/migration.h"
+#include "block/coroutine.h"
+#include "qemu/thread.h"
 
 void colo_info_mig_init(void);
 
-void colo_init_checkpointer(MigrationState *s);
+struct colo_incoming {
+    QEMUFile *file;
+    QemuThread thread;
+};
 
+void colo_init_checkpointer(MigrationState *s);
+/* loadvm */
+extern Coroutine *migration_incoming_co;
+bool loadvm_enable_colo(void);
+void loadvm_exit_colo(void);
+void *colo_process_incoming_checkpoints(void *opaque);
+bool loadvm_in_colo_state(void);
 #endif
