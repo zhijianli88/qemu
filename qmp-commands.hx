@@ -753,6 +753,25 @@ Example:
 EQMP
 
     {
+        .name       = "colo_lost_heartbeat",
+        .args_type  = "",
+        .mhandler.cmd_new = qmp_marshal_input_colo_lost_heartbeat,
+    },
+
+SQMP
+colo_lost_heartbeat
+--------------------
+
+Tell COLO that heartbeat is lost, a failover or takeover is needed.
+
+Example:
+
+-> { "execute": "colo_lost_heartbeat" }
+<- { "return": {} }
+
+EQMP
+
+    {
         .name       = "client_migrate_info",
         .args_type  = "protocol:s,hostname:s,port:i?,tls-port:i?,cert-subject:s?",
         .params     = "protocol hostname port tls-port cert-subject",

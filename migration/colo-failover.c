@@ -11,25 +11,28 @@
  */
 
 #include "migration/migration-colo.h"
+#include "migration/migration-failover.h"
 #include "qmp-commands.h"
 
-void colo_init_checkpointer(MigrationState *s)
+static bool failover_request;
+
+static QEMUBH *failover_bh;
+
+static void colo_failover_bh(void *opaque)
 {
+    qemu_bh_delete(failover_bh);
+    failover_bh = NULL;
+    /*TODO: Do failover work */
 }
 
-void *colo_process_incoming_checkpoints(void *opaque)
+void failover_request_set(void)
 {
-    return NULL;
-}
-
-bool migrate_in_colo_state(void)
-{
-    return false;
+    failover_request = true;
+    failover_bh = qemu_bh_new(colo_failover_bh, NULL);
+    qemu_bh_schedule(failover_bh);
 }
 
 void qmp_colo_lost_heartbeat(Error **errp)
 {
-    error_setg(errp, "COLO is not supported, please rerun configure"
-                     " with --enable-colo option in order to support"
-                     " COLO feature");
+    failover_request_set();
 }
