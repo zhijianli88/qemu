@@ -23,7 +23,7 @@ bool colo_supported(void);
 void colo_info_mig_init(void);
 
 /* Checkpoint control, called in migration/checkpoint thread */
-enum {
+enum colo_mode {
     COLO_UNPROTECTED_MODE = 0,
     COLO_PRIMARY_MODE,
     COLO_SECONDARY_MODE,
