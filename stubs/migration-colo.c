@@ -27,6 +27,11 @@ bool migrate_in_colo_state(void)
     return false;
 }
 
+bool loadvm_in_colo_state(void)
+{
+    return false;
+}
+
 void qmp_colo_lost_heartbeat(Error **errp)
 {
     error_setg(errp, "COLO is not supported, please rerun configure"
