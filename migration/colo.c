@@ -17,6 +17,8 @@
 #include "qemu/error-report.h"
 #include "migration/migration-failover.h"
 #include "net/colo-nic.h"
+#include "block/block.h"
+#include "sysemu/block-backend.h"
 
 /* #define DEBUG_COLO */
 
@@ -82,6 +84,66 @@ static bool colo_runstate_is_stopped(void)
     return runstate_check(RUN_STATE_COLO) || !runstate_is_running();
 }
 
+static int blk_start_replication(bool primary)
+{
+    int mode = primary ? COLO_PRIMARY_MODE : COLO_SECONDARY_MODE;
+    BlockBackend *blk, *temp;
+    int ret = 0;
+
+    for (blk = blk_next(NULL); blk; blk = blk_next(blk)) {
+        if (blk_is_read_only(blk)) {
+            continue;
+        }
+        ret = bdrv_start_replication(blk_bs(blk), mode);
+        if (ret) {
+            return 0;
+        }
+    }
+
+    if (ret < 0) {
+        for (temp = blk_next(NULL); temp != blk; temp = blk_next(temp)) {
+            bdrv_stop_replication(blk_bs(temp));
+        }
+    }
+
+    return ret;
+}
+
+static int blk_do_checkpoint(void)
+{
+    BlockBackend *blk;
+    int ret = 0;
+
+    for (blk = blk_next(NULL); blk; blk = blk_next(blk)) {
+        if (blk_is_read_only(blk)) {
+            continue;
+        }
+
+        if (bdrv_do_checkpoint(blk_bs(blk))) {
+            ret = -1;
+        }
+    }
+
+    return ret;
+}
+
+static int blk_stop_replication(void)
+{
+    BlockBackend *blk;
+    int ret = 0;
+
+    for (blk = blk_next(NULL); blk; blk = blk_next(blk)) {
+        if (blk_is_read_only(blk)) {
+            continue;
+        }
+        if (bdrv_stop_replication(blk_bs(blk))) {
+            ret = -1;
+        }
+    }
+
+    return ret;
+}
+
 /*
  * there are two way to entry this function
  * 1. From colo checkpoint incoming thread, in this case
@@ -101,6 +163,7 @@ static void slave_do_failover(void)
         error_report("colo proxy failed to do failover");
     }
     colo_proxy_destroy(COLO_SECONDARY_MODE);
+    blk_stop_replication();
 
     colo = NULL;
 
@@ -127,6 +190,8 @@ static void master_do_failover(void)
     if (s->state != MIG_STATE_ERROR) {
         migrate_set_state(s, MIG_STATE_COLO, MIG_STATE_COMPLETED);
     }
+
+    blk_stop_replication();
 
     vm_start();
 }
@@ -258,6 +323,9 @@ static int do_colo_transaction(MigrationState *s, QEMUFile *control)
         goto out;
     }
 
+    /* we call this api although this may do nothing on primary side */
+    blk_do_checkpoint();
+
     ret = colo_ctl_put(s->file, COLO_CHECKPOINT_SEND);
     if (ret < 0) {
         goto out;
@@ -344,6 +412,12 @@ static void *colo_thread(void *opaque)
     colo_buffer = qsb_create(NULL, COLO_BUFFER_BASE_SIZE);
     if (colo_buffer == NULL) {
         error_report("Failed to allocate colo buffer!");
+        goto out;
+    }
+
+    /* start block replication */
+    ret = blk_start_replication(true);
+    if (ret) {
         goto out;
     }
 
@@ -508,14 +582,21 @@ void *colo_process_incoming_checkpoints(void *opaque)
 
     create_and_init_ram_cache();
 
-    ret = colo_ctl_put(ctl, COLO_READY);
-    if (ret < 0) {
-        goto out;
-    }
-
     colo_buffer = qsb_create(NULL, COLO_BUFFER_BASE_SIZE);
     if (colo_buffer == NULL) {
         error_report("Failed to allocate colo buffer!");
+        goto out;
+    }
+
+    /* start block replication */
+    ret = blk_start_replication(false);
+    if (ret) {
+        goto out;
+    }
+    DPRINTF("finish block replication\n");
+
+    ret = colo_ctl_put(ctl, COLO_READY);
+    if (ret < 0) {
         goto out;
     }
 
@@ -592,6 +673,9 @@ void *colo_process_incoming_checkpoints(void *opaque)
         DPRINTF("Finish load all vm state to cache\n");
         vmstate_loading = false;
         qemu_mutex_unlock_iothread();
+
+        /* discard colo disk buffer */
+        blk_do_checkpoint();
 
         ret = colo_ctl_put(ctl, COLO_CHECKPOINT_LOADED);
         if (ret < 0) {
