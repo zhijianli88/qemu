@@ -1100,6 +1100,7 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
 {
     int flags = 0, ret = 0;
     static uint64_t seq_iter;
+    bool need_flush = false;
 
     seq_iter++;
 
@@ -1163,6 +1164,7 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
                 break;
             }
 
+            need_flush = true;
             ch = qemu_get_byte(f);
             ram_handle_compressed(host, ch, TARGET_PAGE_SIZE);
             break;
@@ -1174,6 +1176,7 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
                 break;
             }
 
+            need_flush = true;
             qemu_get_buffer(f, host, TARGET_PAGE_SIZE);
             break;
         case RAM_SAVE_FLAG_XBZRLE:
@@ -1190,6 +1193,7 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
                 ret = -EINVAL;
                 break;
             }
+            need_flush = true;
             break;
         case RAM_SAVE_FLAG_EOS:
             /* normal exit */
@@ -1207,7 +1211,10 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
             ret = qemu_file_get_error(f);
         }
     }
-
+    if (!ret  && ram_cache_enable && need_flush) {
+        DPRINTF("Flush ram_cache\n");
+        colo_flush_ram_cache();
+    }
     DPRINTF("Completed load of VM with exit code %d seq iteration "
             "%" PRIu64 "\n", ret, seq_iter);
     return ret;
@@ -1220,6 +1227,7 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
 void create_and_init_ram_cache(void)
 {
     RAMBlock *block;
+    int64_t ram_cache_pages = last_ram_offset() >> TARGET_PAGE_BITS;
 
     QTAILQ_FOREACH(block, &ram_list.blocks, next) {
         block->host_cache = g_malloc(block->used_length);
@@ -1227,6 +1235,14 @@ void create_and_init_ram_cache(void)
     }
 
     ram_cache_enable = true;
+    /*
+    * Start dirty log for slave VM, we will use this dirty bitmap together with
+    * VM's cache RAM dirty bitmap to decide which page in cache should be
+    * flushed into VM's RAM.
+    */
+    migration_bitmap = bitmap_new(ram_cache_pages);
+    migration_dirty_pages = 0;
+    memory_global_dirty_log_start();
 }
 
 void release_ram_cache(void)
@@ -1259,6 +1275,79 @@ static void *memory_region_get_ram_cache_ptr(MemoryRegion *mr, RAMBlock *block)
     assert(addr - block->offset < block->used_length);
 
     return block->host_cache + (addr - block->offset);
+}
+
+static inline
+ram_addr_t host_bitmap_find_and_reset_dirty(MemoryRegion *mr,
+                                            ram_addr_t start)
+{
+    unsigned long base = mr->ram_addr >> TARGET_PAGE_BITS;
+    unsigned long nr = base + (start >> TARGET_PAGE_BITS);
+    unsigned long size = base + (int128_get64(mr->size) >> TARGET_PAGE_BITS);
+
+    unsigned long next;
+
+    next = find_next_bit(ram_list.dirty_memory[DIRTY_MEMORY_MIGRATION],
+                         size, nr);
+    if (next < size) {
+        clear_bit(next, ram_list.dirty_memory[DIRTY_MEMORY_MIGRATION]);
+    }
+    return (next - base) << TARGET_PAGE_BITS;
+}
+
+void colo_flush_ram_cache(void)
+{
+    RAMBlock *block = NULL;
+    void *dst_host;
+    void *src_host;
+    ram_addr_t ca  = 0, ha = 0;
+    bool got_ca = 0, got_ha = 0;
+    int64_t host_dirty = 0, both_dirty = 0;
+
+    address_space_sync_dirty_bitmap(&address_space_memory);
+
+    block = QTAILQ_FIRST(&ram_list.blocks);
+    while (true) {
+        if (ca < block->used_length && ca <= ha) {
+            ca = migration_bitmap_find_and_reset_dirty(block->mr, ca);
+            if (ca < block->used_length) {
+                got_ca = 1;
+            }
+        }
+        if (ha < block->used_length && ha <= ca) {
+            ha = host_bitmap_find_and_reset_dirty(block->mr, ha);
+            if (ha < block->used_length && ha != ca) {
+                got_ha = 1;
+            }
+            host_dirty += (ha < block->used_length ? 1 : 0);
+            both_dirty += (ha < block->used_length && ha == ca ? 1 : 0);
+        }
+        if (ca >= block->used_length && ha >= block->used_length) {
+            ca = 0;
+            ha = 0;
+            block = QTAILQ_NEXT(block, next);
+            if (!block) {
+                break;
+            }
+        } else {
+            if (got_ha) {
+                got_ha = 0;
+                dst_host = memory_region_get_ram_ptr(block->mr) + ha;
+                src_host = memory_region_get_ram_cache_ptr(block->mr, block)
+                           + ha;
+                memcpy(dst_host, src_host, TARGET_PAGE_SIZE);
+            }
+            if (got_ca) {
+                got_ca = 0;
+                dst_host = memory_region_get_ram_ptr(block->mr) + ca;
+                src_host = memory_region_get_ram_cache_ptr(block->mr, block)
+                           + ca;
+                memcpy(dst_host, src_host, TARGET_PAGE_SIZE);
+            }
+        }
+    }
+
+    assert(migration_dirty_pages == 0);
 }
 
 static SaveVMHandlers savevm_ram_handlers = {
