@@ -13,7 +13,10 @@
 
 #ifndef COLO_NIC_H
 #define COLO_NIC_H
+#include "migration/migration-colo.h"
 
+int colo_proxy_init(enum colo_mode mode);
+void colo_proxy_destroy(enum colo_mode mode);
 void colo_add_nic_devices(NetClientState *nc);
 void colo_remove_nic_devices(NetClientState *nc);
 
