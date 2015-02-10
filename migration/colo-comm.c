@@ -32,6 +32,11 @@ static void colo_info_save(QEMUFile *f, void *opaque)
 }
 
 /* restore */
+bool vm_in_colo_state(void)
+{
+    return migrate_in_colo_state() || loadvm_in_colo_state();
+}
+
 int get_colo_mode(void)
 {
     if (migrate_in_colo_state()) {

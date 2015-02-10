@@ -66,6 +66,8 @@ enum {
     COLO_CHECKPOINT_SEND,
     COLO_CHECKPOINT_RECEIVED,
     COLO_CHECKPOINT_LOADED,
+
+    COLO_GUEST_SHUTDOWN
 };
 
 static QEMUBH *colo_bh;
@@ -284,6 +286,13 @@ static int do_colo_transaction(MigrationState *s, QEMUFile *control)
     }
     DPRINTF("got COLO_CHECKPOINT_LOADED\n");
 
+    if (colo_shutdown_requested) {
+        colo_ctl_put(s->file, COLO_GUEST_SHUTDOWN);
+        qemu_fflush(s->file);
+        colo_shutdown_requested = 0;
+        qemu_system_shutdown_request_core();
+    }
+
     ret = 0;
     /* resume master */
     qemu_mutex_lock_iothread();
@@ -454,6 +463,16 @@ static int slave_wait_new_checkpoint(QEMUFile *f)
     switch (cmd) {
     case COLO_CHECKPOINT_NEW:
         return 0;
+    case COLO_GUEST_SHUTDOWN:
+        qemu_mutex_lock_iothread();
+        qemu_system_shutdown_request_core();
+        qemu_mutex_unlock_iothread();
+        /* the main thread will exit and termiante the whole
+        * process, do we need some cleanup?
+        */
+        for (;;) {
+            ;
+        }
     default:
         return -1;
     }
