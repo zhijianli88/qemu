@@ -270,6 +270,7 @@ typedef struct RAMBlock RAMBlock;
 struct RAMBlock {
     struct MemoryRegion *mr;
     uint8_t *host;
+    uint8_t *host_cache; /* For colo, VM's ram cache */
     ram_addr_t offset;
     ram_addr_t used_length;
     ram_addr_t max_length;

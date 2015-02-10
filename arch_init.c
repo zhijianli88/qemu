@@ -330,6 +330,7 @@ static RAMBlock *last_sent_block;
 static ram_addr_t last_offset;
 static unsigned long *migration_bitmap;
 static uint64_t migration_dirty_pages;
+static bool ram_cache_enable;
 static uint32_t last_version;
 static bool ram_bulk_stage;
 
@@ -1035,6 +1036,7 @@ static int load_xbzrle(QEMUFile *f, ram_addr_t addr, void *host)
     return 0;
 }
 
+static void *memory_region_get_ram_cache_ptr(MemoryRegion *mr, RAMBlock *block);
 static inline void *host_from_stream_offset(QEMUFile *f,
                                             ram_addr_t offset,
                                             int flags)
@@ -1049,7 +1051,17 @@ static inline void *host_from_stream_offset(QEMUFile *f,
             return NULL;
         }
 
-        return memory_region_get_ram_ptr(block->mr) + offset;
+        if (ram_cache_enable) {
+            /*
+            * During colo checkpoint, we need bitmap of these migrated pages.
+            * It help us to decide which pages in ram cache should be flushed
+            * into VM's RAM later.
+            */
+            migration_bitmap_set_dirty(block->mr->ram_addr + offset);
+            return memory_region_get_ram_cache_ptr(block->mr, block) + offset;
+        } else {
+            return memory_region_get_ram_ptr(block->mr) + offset;
+        }
     }
 
     len = qemu_get_byte(f);
@@ -1058,8 +1070,14 @@ static inline void *host_from_stream_offset(QEMUFile *f,
 
     QTAILQ_FOREACH(block, &ram_list.blocks, next) {
         if (!strncmp(id, block->idstr, sizeof(id)) &&
-            block->max_length > offset) {
-            return memory_region_get_ram_ptr(block->mr) + offset;
+            block->used_length > offset) {
+            if (ram_cache_enable) {
+                migration_bitmap_set_dirty(block->mr->ram_addr + offset);
+                return memory_region_get_ram_cache_ptr(block->mr, block)
+                       + offset;
+            } else {
+                return memory_region_get_ram_ptr(block->mr) + offset;
+            }
         }
     }
 
@@ -1193,6 +1211,54 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
     DPRINTF("Completed load of VM with exit code %d seq iteration "
             "%" PRIu64 "\n", ret, seq_iter);
     return ret;
+}
+
+/*
+ * colo cache: this is for secondary VM, we cache the whole
+ * memory of the secondary VM, it will be called after first migration.
+ */
+void create_and_init_ram_cache(void)
+{
+    RAMBlock *block;
+
+    QTAILQ_FOREACH(block, &ram_list.blocks, next) {
+        block->host_cache = g_malloc(block->used_length);
+        memcpy(block->host_cache, block->host, block->used_length);
+    }
+
+    ram_cache_enable = true;
+}
+
+void release_ram_cache(void)
+{
+    RAMBlock *block;
+
+    ram_cache_enable = false;
+    if (migration_bitmap) {
+        memory_global_dirty_log_stop();
+        g_free(migration_bitmap);
+        migration_bitmap = NULL;
+    }
+
+    QTAILQ_FOREACH(block, &ram_list.blocks, next) {
+        g_free(block->host_cache);
+    }
+}
+
+static void *memory_region_get_ram_cache_ptr(MemoryRegion *mr, RAMBlock *block)
+{
+   if (mr->alias) {
+        return memory_region_get_ram_cache_ptr(mr->alias, block) +
+               mr->alias_offset;
+    }
+
+    assert(mr->terminates);
+
+    ram_addr_t addr = mr->ram_addr & TARGET_PAGE_MASK;
+
+    assert(addr - block->offset < block->used_length);
+
+    return block->host_cache + (addr - block->offset);
 }
 
 static SaveVMHandlers savevm_ram_handlers = {
