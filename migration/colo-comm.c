@@ -16,6 +16,17 @@
 
 static bool colo_requested;
 
+int get_colo_mode(void)
+{
+    if (migrate_in_colo_state()) {
+        return COLO_PRIMARY_MODE;
+    } else if (loadvm_in_colo_state()) {
+        return COLO_SECONDARY_MODE;
+    } else {
+        return COLO_UNPROTECTED_MODE;
+    }
+}
+
 /* save */
 static void colo_info_save(QEMUFile *f, void *opaque)
 {
