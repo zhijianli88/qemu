@@ -311,6 +311,7 @@ static int colo_do_checkpoint_transaction(MigrationState *s, QEMUFile *control)
     QEMUFile *trans = NULL;
     Error *local_err = NULL;
     int64_t start_time, end_time, down_time;
+    static int init_once;
 
     ret = colo_ctl_put(s->file, COLO_CHECKPOINT_NEW);
     if (ret < 0) {
@@ -350,16 +351,6 @@ static int colo_do_checkpoint_transaction(MigrationState *s, QEMUFile *control)
         goto out;
     }
 
-    /* Disable block migration */
-    s->params.blk = 0;
-    s->params.shared = 0;
-    qemu_savevm_state_begin(trans, &s->params);
-    qemu_mutex_lock_iothread();
-    qemu_savevm_state_complete(trans);
-    qemu_mutex_unlock_iothread();
-
-    qemu_fflush(trans);
-
     ret = colo_proxy_checkpoint(COLO_PRIMARY_MODE);
     if (ret < 0) {
         goto out;
@@ -379,6 +370,31 @@ static int colo_do_checkpoint_transaction(MigrationState *s, QEMUFile *control)
     if (ret < 0) {
         goto out;
     }
+    /* only need send once, Fix me, better moving this out of this function */
+    if (!init_once) {
+        init_once = 1;
+        /* Disable block migration */
+        s->params.blk = 0;
+        s->params.shared = 0;
+        qemu_savevm_state_begin(s->file, &s->params);
+        ret = qemu_file_get_error(s->file);
+        if (ret < 0) {
+            error_report("save vm state begin error\n");
+            goto out;
+        }
+    }
+    qemu_mutex_lock_iothread();
+    /* Note: device state is saved into buffer */
+    ret = qemu_save_device_state(trans);
+    if (ret < 0) {
+        error_report("save device state error\n");
+        qemu_mutex_unlock_iothread();
+        goto out;
+    }
+    qemu_fflush(trans);
+    qemu_save_ram_state(s->file);
+    qemu_mutex_unlock_iothread();
+
     /* we send the total size of the vmstate first */
     size = qsb_get_length(colo_buffer);
     ret = colo_ctl_put(s->file, size);
@@ -653,6 +669,7 @@ void *colo_process_incoming_checkpoints(void *opaque)
     int ret;
     uint64_t total_size;
     Error *local_err = NULL;
+    static int init_once;
 
     qdev_hotplug = 0;
 
@@ -740,6 +757,20 @@ void *colo_process_incoming_checkpoints(void *opaque)
         }
         trace_colo_receive_message("COLO_CHECKPOINT_SEND");
 
+        /* Fix me: better move this out of this loop */
+        if (!init_once) {
+            init_once = 1;
+            ret = qemu_loadvm_state_begin(f);
+            if (ret < 0) {
+                error_report("load vm state begin error, ret=%d", ret);
+                goto out;
+            }
+        }
+        ret = qemu_load_ram_state(f);
+        if (ret < 0) {
+            error_report("load ram state error");
+            goto out;
+        }
         /* read the VM state total size first */
         ret = colo_ctl_get_value(f, &total_size);
         if (ret < 0) {
@@ -769,8 +800,9 @@ void *colo_process_incoming_checkpoints(void *opaque)
         qemu_mutex_lock_iothread();
         qemu_system_reset(VMRESET_SILENT);
         vmstate_loading = true;
-        if (qemu_loadvm_state(fb) < 0) {
-            error_report("COLO: loadvm failed");
+        colo_flush_ram_cache();
+        if (qemu_load_device_state(fb) < 0) {
+            error_report("COLO: load device state failed\n");
             vmstate_loading = false;
             qemu_mutex_unlock_iothread();
             goto out;

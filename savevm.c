@@ -662,6 +662,11 @@ void qemu_savevm_state_begin(QEMUFile *f,
             break;
         }
     }
+
+    if (migrate_in_colo_state()) {
+        qemu_put_byte(f, QEMU_VM_EOF);
+        qemu_fflush(f);
+    }
 }
 
 /*
@@ -863,13 +868,45 @@ static int qemu_savevm_state(QEMUFile *f, Error **errp)
     return ret;
 }
 
-static int qemu_save_device_state(QEMUFile *f)
+int qemu_save_ram_state(QEMUFile *f)
+{
+    SaveStateEntry *se;
+    int ret;
+
+    QTAILQ_FOREACH(se, &savevm_handlers, entry) {
+        if (!se->ops || !se->ops->save_live_complete) {
+            continue;
+        }
+        if (se->ops && se->ops->is_active) {
+            if (!se->ops->is_active(se->opaque)) {
+                continue;
+            }
+        }
+        trace_savevm_section_start(se->idstr, se->section_id);
+        /* Section type */
+        qemu_put_byte(f, QEMU_VM_SECTION_END);
+        qemu_put_be32(f, se->section_id);
+
+        ret = se->ops->save_live_complete(f, se->opaque);
+        trace_savevm_section_end(se->idstr, se->section_id, ret);
+        if (ret < 0) {
+            qemu_file_set_error(f, ret);
+            return ret;
+        }
+    }
+    qemu_put_byte(f, QEMU_VM_EOF);
+
+    return 0;
+}
+
+int qemu_save_device_state(QEMUFile *f)
 {
     SaveStateEntry *se;
 
-    qemu_put_be32(f, QEMU_VM_FILE_MAGIC);
-    qemu_put_be32(f, QEMU_VM_FILE_VERSION);
-
+  if (!migrate_in_colo_state()) {
+        qemu_put_be32(f, QEMU_VM_FILE_MAGIC);
+        qemu_put_be32(f, QEMU_VM_FILE_VERSION);
+    }
     cpu_synchronize_all_states();
 
     QTAILQ_FOREACH(se, &savevm_handlers, entry) {
@@ -1105,6 +1142,104 @@ out:
         ret = file_error_after_eof;
     }
 
+    return ret;
+}
+
+int qemu_loadvm_state_begin(QEMUFile *f)
+{
+    uint8_t section_type;
+    unsigned int v;
+    int ret = -1;
+
+    if (qemu_savevm_state_blocked(NULL)) {
+        return -EINVAL;
+    }
+
+    v = qemu_get_be32(f);
+    if (v != QEMU_VM_FILE_MAGIC) {
+        return -EINVAL;
+    }
+
+    v = qemu_get_be32(f);
+    if (v == QEMU_VM_FILE_VERSION_COMPAT) {
+        error_report("SaveVM v2 format is obsolete and not work anymore");
+        return -ENOTSUP;
+    }
+    if (v != QEMU_VM_FILE_VERSION) {
+        return -ENOTSUP;
+    }
+
+    while ((section_type = qemu_get_byte(f)) != QEMU_VM_EOF) {
+        if (section_type != QEMU_VM_SECTION_START) {
+            error_report("QEMU_VM_SECTION_START");
+            ret = -EINVAL;
+            goto out;
+        }
+        ret = qemu_loadvm_section_start_full(f);
+        if (ret < 0) {
+            goto out;
+        }
+    }
+    ret = qemu_file_get_error(f);
+    if (ret == 0) {
+        return 0;
+     }
+out:
+    qemu_loadvm_state_cleanup();
+    return ret;
+}
+
+int qemu_load_ram_state(QEMUFile *f)
+{
+    uint8_t section_type;
+    int ret = -1;
+
+    while ((section_type = qemu_get_byte(f)) != QEMU_VM_EOF) {
+        if (section_type != QEMU_VM_SECTION_PART &&
+            section_type != QEMU_VM_SECTION_END) {
+            error_report("load ram state, not get "
+                         "QEMU_VM_SECTION_FULL or QEMU_VM_SECTION_END");
+            return -EINVAL;
+        }
+        ret = qemu_loadvm_section_part_end(f);
+        if (ret < 0) {
+            goto out;
+        }
+    }
+    ret = qemu_file_get_error(f);
+    if (ret == 0) {
+        return 0;
+     }
+out:
+    qemu_loadvm_state_cleanup();
+    return ret;
+}
+
+int qemu_load_device_state(QEMUFile *f)
+{
+    uint8_t section_type;
+    int ret = -1;
+
+    while ((section_type = qemu_get_byte(f)) != QEMU_VM_EOF) {
+        if (section_type != QEMU_VM_SECTION_FULL) {
+            error_report("load device state error: "
+                         "Not get QEMU_VM_SECTION_FULL");
+            return -EINVAL;
+        }
+         ret = qemu_loadvm_section_start_full(f);
+         if (ret < 0) {
+            goto out;
+         }
+    }
+
+     ret = qemu_file_get_error(f);
+
+    cpu_synchronize_all_post_init();
+     if (ret == 0) {
+        return 0;
+     }
+out:
+    qemu_loadvm_state_cleanup();
     return ret;
 }
 
