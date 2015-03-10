@@ -935,13 +935,24 @@ static int qemu_savevm_state(QEMUFile *f, Error **errp)
     return ret;
 }
 
-int qemu_save_ram_state(QEMUFile *f)
+/*
+* save ram to slave
+* return  the number of pages saved
+*/
+int qemu_save_ram_state(QEMUFile *f, bool complete)
 {
     SaveStateEntry *se;
+    int section = complete ? QEMU_VM_SECTION_END : QEMU_VM_SECTION_PART;
+    int (*save_state)(QEMUFile *f, void *opaque);
     int ret;
 
     QTAILQ_FOREACH(se, &savevm_state.handlers, entry) {
-        if (!se->ops || !se->ops->save_live_complete) {
+        if (!se->ops) {
+            continue;
+        }
+        save_state = complete ? se->ops->save_live_complete :
+                               se->ops->save_live_iterate;
+        if (!save_state) {
             continue;
         }
         if (se->ops && se->ops->is_active) {
@@ -951,9 +962,9 @@ int qemu_save_ram_state(QEMUFile *f)
         }
         trace_savevm_section_start(se->idstr, se->section_id);
 
-        save_section_header(f, se, QEMU_VM_SECTION_END);
+        save_section_header(f, se, section);
 
-        ret = se->ops->save_live_complete(f, se->opaque);
+        ret = save_state(f, se->opaque);
         trace_savevm_section_end(se->idstr, se->section_id, ret);
         save_section_footer(f, se);
         if (ret < 0) {
@@ -963,7 +974,7 @@ int qemu_save_ram_state(QEMUFile *f)
     }
     qemu_put_byte(f, QEMU_VM_EOF);
 
-    return 0;
+    return ret;
 }
 
 int qemu_save_device_state(QEMUFile *f)
