@@ -310,6 +310,7 @@ static int colo_do_checkpoint_transaction(MigrationState *s, QEMUFile *control)
     size_t size;
     QEMUFile *trans = NULL;
     Error *local_err = NULL;
+    int64_t start_time, end_time, down_time;
 
     ret = colo_ctl_put(s->file, COLO_CHECKPOINT_NEW);
     if (ret < 0) {
@@ -332,6 +333,8 @@ static int colo_do_checkpoint_transaction(MigrationState *s, QEMUFile *control)
         ret = -1;
         goto out;
     }
+
+    start_time = qemu_clock_get_ms(QEMU_CLOCK_HOST);
     /* suspend and save vm state to colo buffer */
     qemu_mutex_lock_iothread();
     colo_shutdown = colo_shutdown_requested;
@@ -416,12 +419,22 @@ static int colo_do_checkpoint_transaction(MigrationState *s, QEMUFile *control)
     }
 
     ret = 0;
+
     /* resume master */
     qemu_mutex_lock_iothread();
     vm_start();
     qemu_mutex_unlock_iothread();
     trace_colo_vm_state_change("stop", "run");
 
+    end_time = qemu_clock_get_ms(QEMU_CLOCK_HOST);
+    down_time = end_time - start_time;
+    s->colo_state.total_downtime +=  down_time;
+    if (down_time > s->colo_state.max_downtime) {
+        s->colo_state.max_downtime = down_time ;
+    }
+    if (down_time < s->colo_state.min_downtime) {
+        s->colo_state.min_downtime = down_time;
+    }
 out:
     if (trans) {
         qemu_fclose(trans);
@@ -503,6 +516,7 @@ static void *colo_thread(void *opaque)
                 /* Limit the min time between two checkpoint */
                 g_usleep((1000*(CHECKPOINT_MIN_PERIOD - interval)));
             }
+            s->colo_state.proxy_discompare_count++;
             goto do_checkpoint;
         }
 
@@ -514,6 +528,8 @@ static void *colo_thread(void *opaque)
         if (current_time - checkpoint_time < colo_checkpoint_period) {
             g_usleep(100000);
             continue;
+        } else {
+            s->colo_state.periodic_checkpoint_count++;
         }
 
 do_checkpoint:
@@ -522,6 +538,7 @@ do_checkpoint:
             goto out;
         }
         checkpoint_time = qemu_clock_get_ms(QEMU_CLOCK_HOST);
+        s->colo_state.checkpoint_count++;
     }
 
 out:
