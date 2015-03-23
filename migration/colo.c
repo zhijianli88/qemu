@@ -385,6 +385,7 @@ static int colo_do_checkpoint_transaction(MigrationState *s, QEMUFile *control)
     if (ret < 0) {
         goto out;
      }
+    s->colo_state.normal_transfer_pages += ret;
     qemu_mutex_unlock_iothread();
 
     /* we send the total size of the vmstate first */
@@ -577,6 +578,7 @@ static void *colo_thread(void *opaque)
                 if (ret < 0) {
                     goto out;
                 }
+                s->colo_state.live_transfer_pages += ret;
             } else {
                 g_usleep(100000);
             }
