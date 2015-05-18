@@ -390,3 +390,8 @@ void colo_proxy_destroy(enum colo_mode mode)
     nfnl_close(nfnlh);
     teardown_nic(mode, getpid());
 }
+
+int colo_proxy_compare(void)
+{
+    return atomic_xchg(&packet_compare_different, 0);
+}
