@@ -119,6 +119,35 @@ static int colo_nic_configure(COLONicState *cns,
         }
     }
 
+    if (side == COLO_SECONDARY_MODE) {
+        char *qemu_script[3];
+
+        if (!cns->qemu_ifup[0] || !cns->qemu_ifdown ||
+            !strcmp(cns->qemu_ifdown, "no") || !cns->qemu_ifdown[0]) {
+            error_report("you have not passed ifup(%s)/ifdown(%s) script to qemu\n",
+                        cns->qemu_ifup, cns->qemu_ifdown);
+            return -1;
+        }
+
+        qemu_script[0] = up ? cns->qemu_ifdown : cns->qemu_ifup;
+        qemu_script[1] = cns->ifname;
+        qemu_script[2] = NULL;
+
+        if (up) {
+            if (launch_script(qemu_script, s->fd)) {
+                error_report("%s execute failed\n", qemu_script[0]);
+                return -1;
+            }
+            return launch_script(argv, s->fd);
+        } else {
+            if (launch_script(argv, s->fd)) {
+                error_report("%s execute failed\n", argv[0]);
+                return -1;
+            }
+            return launch_script(qemu_script, s->fd);
+        }
+    }
+
     return launch_script(argv, s->fd);
 }
 

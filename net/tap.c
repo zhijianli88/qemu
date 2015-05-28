@@ -638,6 +638,17 @@ static int net_init_tap_one(const NetdevTapOptions *tap, NetClientState *peer,
                  tap->colo_nicname);
     }
 
+    if (setup_colo) {
+        if (!strcmp(downscript, "no") || !strcmp(script, "no")) {
+            error_report("script and downscript must be specified "
+                         "if you want to use colo");
+        } else {
+            strcpy(nc->cns.qemu_ifup, script);
+            nc->cns.qemu_ifdown = s->down_script;
+        }
+     }
+ 
+
     if (tap->has_vhost ? tap->vhost :
         vhostfdname || (tap->has_vhostforce && tap->vhostforce)) {
         VhostNetOptions options;
