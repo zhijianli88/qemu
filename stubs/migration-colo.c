@@ -38,11 +38,11 @@ bool loadvm_in_colo_state(void)
     return false;
 }
 
-void colo_add_nic_devices(NetClientState *nc)
+void colo_add_nic_devices(COLONicState *cns)
 {
 }
 
-void colo_remove_nic_devices(NetClientState *nc)
+void colo_remove_nic_devices(COLONicState *cns)
 {
 }
 

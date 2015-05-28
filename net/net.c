@@ -230,6 +230,7 @@ static void qemu_net_client_setup(NetClientState *nc,
         peer->peer = nc;
     }
     QTAILQ_INSERT_TAIL(&net_clients, nc, next);
+    colo_add_nic_devices(&nc->cns);
 
     nc->incoming_queue = qemu_new_net_queue(nc);
     nc->destructor = destructor;
@@ -305,6 +306,7 @@ void *qemu_get_nic_opaque(NetClientState *nc)
 static void qemu_cleanup_net_client(NetClientState *nc)
 {
     QTAILQ_REMOVE(&net_clients, nc, next);
+    colo_remove_nic_devices(&nc->cns);
 
     if (nc->info->cleanup) {
         nc->info->cleanup(nc);

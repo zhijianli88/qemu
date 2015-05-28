@@ -71,9 +71,9 @@ struct nfcolo_packet_compare { /* Unused */
 };
 
 typedef struct nic_device {
-    NetClientState *nc;
-    bool (*support_colo)(NetClientState *nc);
-    int (*configure)(NetClientState *nc, bool up, int side, int index);
+    COLONicState *cns;
+    bool (*support_colo)(COLONicState *cns);
+    int (*configure)(COLONicState *cns, bool up, int side, int index);
     QTAILQ_ENTRY(nic_device) next;
     bool is_up;
 } nic_device;
@@ -88,9 +88,9 @@ QTAILQ_HEAD(, nic_device) nic_devices = QTAILQ_HEAD_INITIALIZER(nic_devices);
 * colo_proxy_script usage
 * ./colo_proxy_script master/slave install/uninstall phy_if virt_if index
 */
-static bool colo_nic_support(NetClientState *nc)
+static bool colo_nic_support(COLONicState *cns)
 {
-    return nc && nc->colo_script[0] && nc->colo_nicname[0];
+    return cns->script[0] && cns->nicname[0];
 }
 
 static int launch_colo_script(char *argv[])
@@ -115,24 +115,24 @@ static int launch_colo_script(char *argv[])
     return -1;
 }
 
-static int colo_nic_configure(NetClientState *nc,
+static int colo_nic_configure(COLONicState *cns,
             bool up, int side, int index)
 {
     int i, argc = 6;
     char *argv[7], index_str[32];
     char **parg;
 
-    if (!nc && index <= 0) {
+    if (!cns && index <= 0) {
         error_report("Can not parse colo_script or colo_nicname");
         return -1;
     }
 
     parg = argv;
-    *parg++ = nc->colo_script;
+    *parg++ = cns->script;
     *parg++ = (char *)(side == COLO_SECONDARY_MODE ? "slave" : "master");
     *parg++ = (char *)(up ? "install" : "uninstall");
-    *parg++ = nc->colo_nicname;
-    *parg++ = nc->ifname;
+    *parg++ = cns->nicname;
+    *parg++ = cns->ifname;
     sprintf(index_str, "%d", index);
     *parg++ = index_str;
     *parg = NULL;
@@ -147,16 +147,16 @@ static int colo_nic_configure(NetClientState *nc,
     return launch_colo_script(argv);
 }
 
-static int configure_one_nic(NetClientState *nc,
+static int configure_one_nic(COLONicState *cns,
              bool up, int side, int index)
 {
     struct nic_device *nic;
 
-    assert(nc);
+    assert(cns);
 
     QTAILQ_FOREACH(nic, &nic_devices, next) {
-        if (nic->nc == nc) {
-            if (!nic->support_colo || !nic->support_colo(nic->nc)
+        if (nic->cns == cns) {
+            if (!nic->support_colo || !nic->support_colo(nic->cns)
                 || !nic->configure) {
                 return -1;
             }
@@ -164,7 +164,7 @@ static int configure_one_nic(NetClientState *nc,
                 return 0;
             }
 
-            if (nic->configure(nic->nc, up, side, index) && up) {
+            if (nic->configure(nic->cns, up, side, index) && up) {
                 return -1;
             }
             nic->is_up = up;
@@ -184,7 +184,7 @@ static int configure_nic(int side, int index)
     }
 
     QTAILQ_FOREACH(nic, &nic_devices, next) {
-        if (configure_one_nic(nic->nc, 1, side, index)) {
+        if (configure_one_nic(nic->cns, 1, side, index)) {
             return -1;
         }
     }
@@ -197,14 +197,24 @@ static void teardown_nic(int side, int index)
     struct nic_device *nic;
 
     QTAILQ_FOREACH(nic, &nic_devices, next) {
-        configure_one_nic(nic->nc, 0, side, index);
+        configure_one_nic(nic->cns, 0, side, index);
     }
 }
 
-void colo_add_nic_devices(NetClientState *nc)
+void colo_add_nic_devices(COLONicState *cns)
 {
-    struct nic_device *nic = g_malloc0(sizeof(*nic));
+    struct nic_device *nic;
+    NetClientState *nc = container_of(cns, NetClientState, cns);
 
+    QTAILQ_FOREACH(nic, &nic_devices, next) {
+        NetClientState *nic_nc = container_of(nic->cns, NetClientState, cns);
+        if ((nic_nc->peer && nic_nc->peer == nc) ||
+            (nc->peer && nc->peer == nic_nc)) {
+            return;
+        }
+    }
+
+    nic = g_malloc0(sizeof(*nic));
     nic->support_colo = colo_nic_support;
     nic->configure = colo_nic_configure;
     /*
@@ -212,22 +222,18 @@ void colo_add_nic_devices(NetClientState *nc)
      * only support "-netdev tap,colo_scripte..."  options
      * "-net nic -net tap..." options is not supported
      */
-    nic->nc = nc;
+    nic->cns = cns;
 
     QTAILQ_INSERT_TAIL(&nic_devices, nic, next);
 }
 
-void colo_remove_nic_devices(NetClientState *nc)
+void colo_remove_nic_devices(COLONicState *cns)
 {
     struct nic_device *nic, *next_nic;
 
-    if (!nc) {
-        return;
-    }
-
     QTAILQ_FOREACH_SAFE(nic, &nic_devices, next, next_nic) {
-        if (nic->nc == nc) {
-            configure_one_nic(nc, 0, get_colo_mode(), getpid());
+        if (nic->cns == cns) {
+            configure_one_nic(cns, 0, get_colo_mode(), getpid());
             QTAILQ_REMOVE(&nic_devices, nic, next);
             g_free(nic);
         }

@@ -297,8 +297,6 @@ static void tap_cleanup(NetClientState *nc)
 
     qemu_purge_queued_packets(nc);
 
-    colo_remove_nic_devices(nc);
-
     if (s->down_script[0])
         launch_script(s->down_script, s->down_script_arg, s->fd);
 
@@ -640,18 +638,14 @@ static int net_init_tap_one(const NetdevTapOptions *tap, NetClientState *peer,
     }
 
     nc = &(s->nc);
-    snprintf(nc->ifname, sizeof(nc->ifname), "%s", ifname);
+    snprintf(nc->cns.ifname, sizeof(nc->cns.ifname), "%s", ifname);
     if (tap->has_colo_script) {
-        snprintf(nc->colo_script, sizeof(nc->colo_script), "%s",
-                 tap->colo_script);
+        snprintf(nc->cns.script,
+                 sizeof(nc->cns.script), "%s", tap->colo_script);
     }
     if (tap->has_colo_nicname) {
-        snprintf(nc->colo_nicname, sizeof(nc->colo_nicname), "%s",
+        snprintf(nc->cns.nicname, sizeof(nc->cns.nicname), "%s",
                  tap->colo_nicname);
-    }
-
-    if (setup_colo) {
-        colo_add_nic_devices(nc);
     }
 
     if (tap->has_vhost ? tap->vhost :

@@ -15,10 +15,16 @@
 #define COLO_NIC_H
 #include "migration/migration-colo.h"
 
+typedef struct COLONicState {
+    char nicname[128]; /* forward dev */
+    char script[1024]; /* colo script */
+    char ifname[128];  /* e.g. tap name */
+} COLONicState;
+
 int colo_proxy_init(enum colo_mode mode);
 void colo_proxy_destroy(enum colo_mode mode);
-void colo_add_nic_devices(NetClientState *nc);
-void colo_remove_nic_devices(NetClientState *nc);
+void colo_add_nic_devices(COLONicState *cns);
+void colo_remove_nic_devices(COLONicState *cns);
 
 int colo_proxy_compare(void);
 int colo_proxy_failover(void);
