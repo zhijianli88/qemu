@@ -725,7 +725,6 @@ void *colo_process_incoming_checkpoints(void *opaque)
     int ret;
     uint64_t total_size;
     Error *local_err = NULL;
-    static int init_once;
 
     qdev_hotplug = 0;
 
