@@ -72,7 +72,6 @@ struct nfcolo_packet_compare { /* Unused */
 
 typedef struct nic_device {
     COLONicState *cns;
-    bool (*support_colo)(COLONicState *cns);
     int (*configure)(COLONicState *cns, bool up, int side, int index);
     QTAILQ_ENTRY(nic_device) next;
     bool is_up;
@@ -88,11 +87,6 @@ QTAILQ_HEAD(, nic_device) nic_devices = QTAILQ_HEAD_INITIALIZER(nic_devices);
 * colo_proxy_script usage
 * ./colo_proxy_script master/slave install/uninstall phy_if virt_if index
 */
-static bool colo_nic_support(COLONicState *cns)
-{
-    return cns->script[0] && cns->nicname[0];
-}
-
 static int launch_colo_script(char *argv[])
 {
     int pid, status;
@@ -156,15 +150,12 @@ static int configure_one_nic(COLONicState *cns,
 
     QTAILQ_FOREACH(nic, &nic_devices, next) {
         if (nic->cns == cns) {
-            if (!nic->support_colo || !nic->support_colo(nic->cns)
-                || !nic->configure) {
-                return -1;
-            }
             if (up == nic->is_up) {
                 return 0;
             }
 
-            if (nic->configure(nic->cns, up, side, index) && up) {
+            if (!nic->configure || (nic->configure(nic->cns, up, side, index) &&
+                up)) {
                 return -1;
             }
             nic->is_up = up;
@@ -206,6 +197,11 @@ void colo_add_nic_devices(COLONicState *cns)
     struct nic_device *nic;
     NetClientState *nc = container_of(cns, NetClientState, cns);
 
+    if (nc->info->type == NET_CLIENT_OPTIONS_KIND_HUBPORT ||
+        nc->info->type == NET_CLIENT_OPTIONS_KIND_NIC) {
+        return;
+    }
+
     QTAILQ_FOREACH(nic, &nic_devices, next) {
         NetClientState *nic_nc = container_of(nic->cns, NetClientState, cns);
         if ((nic_nc->peer && nic_nc->peer == nc) ||
@@ -215,13 +211,7 @@ void colo_add_nic_devices(COLONicState *cns)
     }
 
     nic = g_malloc0(sizeof(*nic));
-    nic->support_colo = colo_nic_support;
     nic->configure = colo_nic_configure;
-    /*
-     * TODO
-     * only support "-netdev tap,colo_scripte..."  options
-     * "-net nic -net tap..." options is not supported
-     */
     nic->cns = cns;
 
     QTAILQ_INSERT_TAIL(&nic_devices, nic, next);
