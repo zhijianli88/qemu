@@ -19,6 +19,7 @@
 #include "include/migration/migration.h"
 #include "migration/migration-colo.h"
 #include "net/net.h"
+#include "net/tap.h"
 #include "net/colo-nic.h"
 #include "qemu/error-report.h"
 #include "trace.h"
@@ -87,34 +88,14 @@ QTAILQ_HEAD(, nic_device) nic_devices = QTAILQ_HEAD_INITIALIZER(nic_devices);
 * colo_proxy_script usage
 * ./colo_proxy_script master/slave install/uninstall phy_if virt_if index
 */
-static int launch_colo_script(char *argv[])
-{
-    int pid, status;
-    char *script = argv[0];
-
-    /* try to launch network script */
-    pid = fork();
-    if (pid == 0) {
-        execv(script, argv);
-        _exit(1);
-    } else if (pid > 0) {
-        while (waitpid(pid, &status, 0) != pid) {
-            /* loop */
-        }
-
-        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-            return 0;
-        }
-    }
-    return -1;
-}
-
 static int colo_nic_configure(COLONicState *cns,
             bool up, int side, int index)
 {
     int i, argc = 6;
     char *argv[7], index_str[32];
     char **parg;
+    NetClientState *nc = container_of(cns, NetClientState, cns);
+    TAPState *s = DO_UPCAST(TAPState, nc, nc);
 
     if (!cns && index <= 0) {
         error_report("Can not parse colo_script or colo_nicname");
@@ -138,7 +119,7 @@ static int colo_nic_configure(COLONicState *cns,
         }
     }
 
-    return launch_colo_script(argv);
+    return launch_script(argv, s->fd);
 }
 
 static int configure_one_nic(COLONicState *cns,

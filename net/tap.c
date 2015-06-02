@@ -43,25 +43,6 @@
 #include "net/tap.h"
 #include "net/colo-nic.h"
 
-#include "net/vhost_net.h"
-
-typedef struct TAPState {
-    NetClientState nc;
-    int fd;
-    char down_script[1024];
-    char down_script_arg[128];
-    uint8_t buf[NET_BUFSIZE];
-    bool read_poll;
-    bool write_poll;
-    bool using_vnet_hdr;
-    bool has_ufo;
-    bool enabled;
-    VHostNetState *vhost_net;
-    unsigned host_vnet_hdr_len;
-} TAPState;
-
-static int launch_script(const char *setup_script, const char *ifname, int fd);
-
 static int tap_can_send(void *opaque);
 static void tap_send(void *opaque);
 static void tap_writable(void *opaque);
@@ -297,8 +278,15 @@ static void tap_cleanup(NetClientState *nc)
 
     qemu_purge_queued_packets(nc);
 
-    if (s->down_script[0])
-        launch_script(s->down_script, s->down_script_arg, s->fd);
+    if (s->down_script[0]) {
+        char *args[3];
+        char **parg;
+        parg = args;
+        *parg++ = (char *)s->down_script;
+        *parg++ = (char *)s->down_script_arg;
+        *parg = NULL;
+        launch_script(args, s->fd);
+    }
 
     tap_read_poll(s, false);
     tap_write_poll(s, false);
@@ -369,11 +357,10 @@ static TAPState *net_tap_fd_init(NetClientState *peer,
     return s;
 }
 
-static int launch_script(const char *setup_script, const char *ifname, int fd)
+int launch_script(char *const args[], int fd)
 {
     int pid, status;
-    char *args[3];
-    char **parg;
+    const char *setup_script = args[0];
 
     /* try to launch network script */
     pid = fork();
@@ -385,10 +372,6 @@ static int launch_script(const char *setup_script, const char *ifname, int fd)
                 close(i);
             }
         }
-        parg = args;
-        *parg++ = (char *)setup_script;
-        *parg++ = (char *)ifname;
-        *parg = NULL;
         execv(setup_script, args);
         _exit(1);
     } else if (pid > 0) {
@@ -589,10 +572,17 @@ static int net_tap_init(const NetdevTapOptions *tap, int *vnet_hdr,
 
     if (setup_script &&
         setup_script[0] != '\0' &&
-        strcmp(setup_script, "no") != 0 &&
-        launch_script(setup_script, ifname, fd)) {
-        close(fd);
-        return -1;
+        strcmp(setup_script, "no") != 0) {
+        char *args[3];
+        char **parg;
+        parg = args;
+        *parg++ = (char *)setup_script;
+        *parg++ = (char *)ifname;
+        *parg = NULL;
+        if (launch_script(args, fd)) {
+            close(fd);
+            return -1;
+        }
     }
 
     return fd;
