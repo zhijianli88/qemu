@@ -60,9 +60,6 @@ typedef struct TAPState {
     unsigned host_vnet_hdr_len;
 } TAPState;
 
-static void launch_script(const char *setup_script, const char *ifname,
-                          int fd, Error **errp);
-
 static void tap_send(void *opaque);
 static void tap_writable(void *opaque);
 
@@ -291,7 +288,14 @@ static void tap_cleanup(NetClientState *nc)
     qemu_purge_queued_packets(nc);
 
     if (s->down_script[0]) {
-        launch_script(s->down_script, s->down_script_arg, s->fd, &err);
+        char *args[3];
+        char **parg;
+
+        parg = args;
+        *parg++ = (char *)s->down_script;
+        *parg++ = (char *)s->down_script_arg;
+        *parg = NULL;
+        launch_script(args, s->fd, &err);
         if (err) {
             error_report_err(err);
         }
@@ -366,12 +370,10 @@ static TAPState *net_tap_fd_init(NetClientState *peer,
     return s;
 }
 
-static void launch_script(const char *setup_script, const char *ifname,
-                          int fd, Error **errp)
+void launch_script(char *const args[], int fd, Error **errp)
 {
     int pid, status;
-    char *args[3];
-    char **parg;
+    const char *setup_script = args[0];
 
     /* try to launch network script */
     pid = fork();
@@ -388,10 +390,6 @@ static void launch_script(const char *setup_script, const char *ifname,
                 close(i);
             }
         }
-        parg = args;
-        *parg++ = (char *)setup_script;
-        *parg++ = (char *)ifname;
-        *parg = NULL;
         execv(setup_script, args);
         _exit(1);
     } else {
@@ -595,7 +593,14 @@ static int net_tap_init(const NetdevTapOptions *tap, int *vnet_hdr,
     if (setup_script &&
         setup_script[0] != '\0' &&
         strcmp(setup_script, "no") != 0) {
-        launch_script(setup_script, ifname, fd, &err);
+        char *args[3];
+        char **parg;
+        parg = args;
+        *parg++ = (char *)setup_script;
+        *parg++ = (char *)ifname;
+        *parg = NULL;
+
+        launch_script(args, fd, &err);
         if (err) {
             error_propagate(errp, err);
             close(fd);
