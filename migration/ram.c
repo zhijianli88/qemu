@@ -1225,6 +1225,8 @@ static int ram_save_iterate(QEMUFile *f, void *opaque)
 /* Called with iothread lock */
 static int ram_save_complete(QEMUFile *f, void *opaque)
 {
+    int total_pages = 0;
+
     rcu_read_lock();
 
     migration_bitmap_sync();
@@ -1243,6 +1245,7 @@ static int ram_save_complete(QEMUFile *f, void *opaque)
         if (pages == 0) {
             break;
         }
+        total_pages += pages;
     }
 
     flush_compressed_data(f);
@@ -1259,7 +1262,7 @@ static int ram_save_complete(QEMUFile *f, void *opaque)
     rcu_read_unlock();
     qemu_put_be64(f, RAM_SAVE_FLAG_EOS);
 
-    return 0;
+    return total_pages;
 }
 
 static uint64_t ram_save_pending(QEMUFile *f, void *opaque, uint64_t max_size)
