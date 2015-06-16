@@ -893,6 +893,37 @@ static int parse_read_pattern(const char *opt)
     return -EINVAL;
 }
 
+static int parse_children_options(BDRVQuorumState *s, QDict *options,
+                                  const char *indexstr, int index,
+                                  Error **errp)
+{
+    QemuOpts *children_opts = NULL;
+    Error *local_err = NULL;
+    int ret = 0;
+    bool value;
+
+    children_opts = qemu_opts_create(&quorum_children_common_opts, NULL, 0,
+                                     &error_abort);
+    qemu_opts_absorb_qdict_by_index(children_opts, options, indexstr,
+                                    &local_err);
+    if (local_err) {
+        ret = -EINVAL;
+        goto out;
+    }
+
+    value = qemu_opt_get_bool(children_opts, QUORUM_CHILDREN_OPT_IGNORE_ERRORS,
+                              false);
+    s->ignore_errors[index] = value;
+
+out:
+    qemu_opts_del(children_opts);
+    /* propagate error */
+    if (local_err) {
+        error_propagate(errp, local_err);
+    }
+    return ret;
+}
+
 static int quorum_open(BlockDriverState *bs, QDict *options, int flags,
                        Error **errp)
 {
@@ -963,11 +994,17 @@ static int quorum_open(BlockDriverState *bs, QDict *options, int flags,
     /* allocate the children BlockDriverState array */
     s->bs = g_new0(BlockDriverState *, s->num_children);
     opened = g_new0(bool, s->num_children);
+    s->ignore_errors = g_new0(bool, s->num_children);
 
     for (i = 0; i < s->num_children; i++) {
         char indexstr[32];
         ret = snprintf(indexstr, 32, "children.%d", i);
         assert(ret < 32);
+
+        ret = parse_children_options(s, options, indexstr, i, &local_err);
+        if (ret < 0) {
+            goto close_exit;
+        }
 
         ret = bdrv_open_image(&s->bs[i], NULL, options, indexstr, bs,
                               &child_format, false, &local_err);
