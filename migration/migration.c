@@ -595,7 +595,8 @@ void qmp_migrate(const char *uri, bool has_blk, bool blk,
 
     if (s->state == MIGRATION_STATUS_ACTIVE ||
         s->state == MIGRATION_STATUS_SETUP ||
-        s->state == MIGRATION_STATUS_CANCELLING) {
+        s->state == MIGRATION_STATUS_CANCELLING ||
+        s->state == MIGRATION_STATUS_COLO || loadvm_in_colo_state()) {
         error_set(errp, QERR_MIGRATION_ACTIVE);
         return;
     }
