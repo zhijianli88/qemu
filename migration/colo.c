@@ -20,6 +20,7 @@
 #include "qapi-event.h"
 #include "net/colo-nic.h"
 #include "qmp-commands.h"
+#include "block/block_int.h"
 
 /*
 * We should not do checkpoint one after another without any time interval,
@@ -118,6 +119,8 @@ static bool colo_runstate_is_stopped(void)
  */
 static void secondary_vm_do_failover(void)
 {
+    Error *local_err = NULL;
+
     /* Wait for incoming thread loading vmstate */
     while (vmstate_loading) {
         ;
@@ -127,6 +130,12 @@ static void secondary_vm_do_failover(void)
         error_report("colo proxy failed to do failover");
     }
     colo_proxy_destroy(COLO_MODE_SECONDARY);
+
+    bdrv_stop_replication_all(true, &local_err);
+    if (local_err) {
+        error_report_err(local_err);
+    }
+    trace_colo_stop_block_replication("failover");
 
     colo = NULL;
 
@@ -145,6 +154,7 @@ static void secondary_vm_do_failover(void)
 static void primary_vm_do_failover(void)
 {
     MigrationState *s = migrate_get_current();
+    Error *local_err = NULL;
 
     if (!colo_runstate_is_stopped()) {
         vm_stop_force_state(RUN_STATE_COLO);
@@ -155,6 +165,12 @@ static void primary_vm_do_failover(void)
     if (s->state != MIGRATION_STATUS_FAILED) {
         migrate_set_state(s, MIGRATION_STATUS_COLO, MIGRATION_STATUS_COMPLETED);
     }
+
+    bdrv_stop_replication_all(true, &local_err);
+    if (local_err) {
+        error_report_err(local_err);
+    }
+    trace_colo_stop_block_replication("failover");
 
     vm_start();
 }
@@ -229,6 +245,7 @@ static int colo_do_checkpoint_transaction(MigrationState *s, QEMUFile *control)
     int colo_shutdown, ret;
     size_t size;
     QEMUFile *trans = NULL;
+    Error *local_err = NULL;
 
     ret = colo_ctl_put(s->file, COLO_CHECKPOINT_NEW);
     if (ret < 0) {
@@ -282,6 +299,16 @@ static int colo_do_checkpoint_transaction(MigrationState *s, QEMUFile *control)
         goto out;
     }
 
+    /* we call this api although this may do nothing on primary side */
+    qemu_mutex_lock_iothread();
+    bdrv_do_checkpoint_all(&local_err);
+    qemu_mutex_unlock_iothread();
+    if (local_err) {
+        error_report_err(local_err);
+        ret = -1;
+        goto out;
+    }
+
     ret = colo_ctl_put(s->file, COLO_CHECKPOINT_SEND);
     if (ret < 0) {
         goto out;
@@ -313,6 +340,10 @@ static int colo_do_checkpoint_transaction(MigrationState *s, QEMUFile *control)
     trace_colo_receive_message("COLO_CHECKPOINT_LOADED");
 
     if (colo_shutdown) {
+        qemu_mutex_lock_iothread();
+        bdrv_stop_replication_all(false, NULL);
+        trace_colo_stop_block_replication("shutdown");
+        qemu_mutex_unlock_iothread();
         colo_ctl_put(s->file, COLO_GUEST_SHUTDOWN);
         qemu_fflush(s->file);
         colo_shutdown_requested = 0;
@@ -344,6 +375,7 @@ static void *colo_thread(void *opaque)
     QEMUFile *colo_control = NULL;
     int64_t current_time, checkpoint_time = qemu_clock_get_ms(QEMU_CLOCK_HOST);
     int i, ret;
+    Error *local_err = NULL;
 
     if (colo_proxy_init(COLO_MODE_PRIMARY) != 0) {
         error_report("Init colo proxy error");
@@ -375,6 +407,12 @@ static void *colo_thread(void *opaque)
     }
 
     qemu_mutex_lock_iothread();
+    /* start block replication */
+    bdrv_start_replication_all(REPLICATION_MODE_PRIMARY, &local_err);
+    if (local_err) {
+        goto out;
+    }
+    trace_colo_start_block_replication();
     vm_start();
     qemu_mutex_unlock_iothread();
     trace_colo_vm_state_change("stop", "run");
@@ -425,7 +463,11 @@ do_checkpoint:
     }
 
 out:
-    error_report("colo: some error happens in colo_thread");
+    if (local_err) {
+        error_report_err(local_err);
+    } else {
+        error_report("colo: some error happens in colo_thread");
+    }
     qapi_event_send_colo_exit("primary", true, "unknown", NULL);;
     /* Give users time (2s) to get involved in this verdict */
     for (i = 0; i < 10; i++) {
@@ -510,6 +552,8 @@ static int colo_wait_handle_cmd(QEMUFile *f, int *checkpoint_request)
     case COLO_GUEST_SHUTDOWN:
         qemu_mutex_lock_iothread();
         vm_stop_force_state(RUN_STATE_COLO);
+        bdrv_stop_replication_all(false, NULL);
+        trace_colo_stop_block_replication("shutdown");
         qemu_system_shutdown_request_core();
         qemu_mutex_unlock_iothread();
         trace_colo_receive_message("COLO_GUEST_SHUTDOWN");
@@ -533,6 +577,7 @@ void *colo_process_incoming_checkpoints(void *opaque)
     QEMUFile *ctl = NULL, *fb = NULL;
     int i, ret;
     uint64_t total_size;
+    Error *local_err = NULL;
 
     qdev_hotplug = 0;
 
@@ -561,6 +606,15 @@ void *colo_process_incoming_checkpoints(void *opaque)
         error_report("Failed to allocate colo buffer!");
         goto out;
     }
+
+    qemu_mutex_lock_iothread();
+    /* start block replication */
+    bdrv_start_replication_all(REPLICATION_MODE_SECONDARY, &local_err);
+    if (local_err) {
+        goto out;
+    }
+    qemu_mutex_unlock_iothread();
+    trace_colo_start_block_replication();
 
     ret = colo_ctl_put(ctl, COLO_CHECPOINT_READY);
     if (ret < 0) {
@@ -647,8 +701,15 @@ void *colo_process_incoming_checkpoints(void *opaque)
             goto out;
         }
 
-        vmstate_loading = false;
+        /* discard colo disk buffer */
+        bdrv_do_checkpoint_all(&local_err);
         qemu_mutex_unlock_iothread();
+        if (local_err) {
+            vmstate_loading = false;
+            goto out;
+        }
+
+        vmstate_loading = false;
 
         ret = colo_ctl_put(ctl, COLO_CHECKPOINT_LOADED);
         if (ret < 0) {
@@ -666,7 +727,11 @@ void *colo_process_incoming_checkpoints(void *opaque)
     }
 
 out:
-    error_report("Detect some error or get a failover request");
+    if (local_err) {
+        error_report_err(local_err);
+    } else {
+        error_report("Detect some error or get a failover request");
+    }
     /*
     * Here, we raise a qmp event to the user,
     * It can help user to know what happens, and help deciding whether to
