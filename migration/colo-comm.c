@@ -21,6 +21,11 @@ typedef struct {
 
 static COLOInfo colo_info;
 
+void savevm_skip_colo_state(void)
+{
+    colo_info.skip = true;
+}
+
 static void colo_info_pre_save(void *opaque)
 {
     COLOInfo *s = opaque;
@@ -32,12 +37,20 @@ static void colo_info_pre_save(void *opaque)
     }
 }
 
+static bool colo_info_need(void *opaque)
+{
+    if (migrate_enable_colo() && !colo_info.skip) {
+        return true;
+     }
+    return false;
+}
 
 static const VMStateDescription colo_state = {
      .name = "COLOState",
      .version_id = 1,
      .minimum_version_id = 1,
      .pre_save = colo_info_pre_save,
+     .needed = colo_info_need,
      .fields = (VMStateField[]) {
          VMSTATE_UINT32(colo_requested, COLOInfo),
          VMSTATE_END_OF_LIST()
