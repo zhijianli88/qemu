@@ -71,6 +71,8 @@ MigrationState *migrate_get_current(void)
                 DEFAULT_MIGRATE_COMPRESS_THREAD_COUNT,
         .parameters[MIGRATION_PARAMETER_DECOMPRESS_THREADS] =
                 DEFAULT_MIGRATE_DECOMPRESS_THREAD_COUNT,
+        .colo_state.max_downtime = 0,
+        .colo_state.min_downtime = INT64_MAX
     };
 
     return &current_migration;
@@ -681,6 +683,7 @@ static MigrationState *migrate_init(const MigrationParams *params)
     s->bandwidth_limit = bandwidth_limit;
     migrate_set_state(s, MIGRATION_STATUS_NONE, MIGRATION_STATUS_SETUP);
 
+    s->colo_state.min_downtime = INT64_MAX;
     s->total_time = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
     return s;
 }
