@@ -28,10 +28,12 @@ class LinuxInitrd(Test):
         """
         Pretends to boot QEMU with an initrd file with size of 2GiB
         and expect it exits with error message.
+        Fedora-18 shipped with linux-3.6 which have not supported xloadflags
+        cannot support more than 2GiB initrd.
         """
-        kernel_url = ('https://mirrors.kernel.org/fedora/releases/28/'
-                      'Everything/x86_64/os/images/pxeboot/vmlinuz')
-        kernel_hash = '238e083e114c48200f80d889f7e32eeb2793e02a'
+        kernel_url = ('https://archives.fedoraproject.org/pub/archive/fedora/li'
+                      'nux/releases/18/Fedora/x86_64/os/images/pxeboot/vmlinuz')
+        kernel_hash = '41464f68efe42b9991250bed86c7081d2ccdbb21'
         kernel_path = self.fetch_asset(kernel_url, asset_hash=kernel_hash)
         max_size = 2 * (1024 ** 3) - 1
 
@@ -39,8 +41,8 @@ class LinuxInitrd(Test):
             initrd.seek(max_size)
             initrd.write(b'\0')
             initrd.flush()
-            cmd = "%s -kernel %s -initrd %s" % (self.qemu_bin, kernel_path,
-                                                initrd.name)
+            cmd = "%s -kernel %s -initrd %s -m 4096" % (
+                self.qemu_bin, kernel_path, initrd.name)
             res = run(cmd, ignore_status=True)
             self.assertEqual(res.exit_status, 1)
             expected_msg = r'.*initrd is too large.*max: \d+, need %s.*' % (
